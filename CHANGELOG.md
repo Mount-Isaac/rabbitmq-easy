@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1] - 2025-06-11
+
+### Changed
+- Updated README with improved documentation
+- Fixed typos in examples
+- Enhanced Docker Compose examples
+- Improved formatting and clarity
+
 ## [1.0.0] - 2025-06-10
 
 ### Added
