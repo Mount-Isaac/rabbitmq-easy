@@ -34,19 +34,19 @@ from rabbitmq_easy import RabbitMQManager
 manager = RabbitMQManager(
     host='localhost',
     port=5672,
-    username='admin',
-    password='password',
-    queues=['queue1', 'queue2'],
-    routing_keys=['queue1.*', 'queue2.*'],
+    username='guest',
+    password='guest',
+    queues=['orders', 'payments'],
+    routing_keys=['orders.*', 'payments.*'],
     exchange='my_exchange'
 )
 
 # Publish a message
-manager.publish_message('my_exchange', 'queue1.new', '{"order_id": 123}')
+manager.publish_message('my_exchange', 'orders.new', '{"order_id": 123}')
 
 # Use as context manager
 with RabbitMQManager() as manager:  # Uses environment variables
-    manager.publish_message('my_exchange', 'queue1.new', '{"order_id": 123}')
+    manager.publish_message('my_exchange', 'orders.new', '{"order_id": 123}')
 ```
 
 ### Environment Variables Setup
@@ -56,11 +56,11 @@ Create a `.env` file:
 ```bash
 RABBITMQ_HOST=localhost
 RABBITMQ_PORT=5672
-RABBITMQ_USERNAME=admin
-RABBITMQ_PASSWORD=password
+RABBITMQ_USERNAME=guest
+RABBITMQ_PASSWORD=guest
 RABBITMQ_EXCHANGE=my_exchange
-RABBITMQ_QUEUES=queue1,queue2
-RABBITMQ_ROUTING_KEYS=queue1.*,queue2.*.*
+RABBITMQ_QUEUES=orders,payments,notifications
+RABBITMQ_ROUTING_KEYS=orders.*,payments.*,notifications.*
 ```
 
 Then use:
@@ -135,7 +135,7 @@ def process_message(ch, method, properties, body):
 
 # Setup consumer
 with RabbitMQManager() as manager:
-    manager.start_consuming('queue1', process_message)
+    manager.start_consuming('orders', process_message)
 ```
 
 ### Dead Letter Queue Handling
@@ -240,19 +240,19 @@ When you initialize with:
 
 ```python
 manager = RabbitMQManager(
-    exchange='queue1',
-    queues=['new_queue1', 'pending_queue1'],
-    routing_keys=['queue1.new', 'queue1.pending']
+    exchange='orders',
+    queues=['new_orders', 'pending_orders'],
+    routing_keys=['orders.new', 'orders.pending']
 )
 ```
 
 RabbitMQ Easy automatically creates:
 
-1. **`queue1`** exchange (main exchange)
-2. **`queue1_dlx`** exchange (dead letter exchange)
-3. **`new_queue1`** queue → bound to `queue1` exchange with `queue1.new` routing key
-4. **`pending_queue1`** queue → bound to `queue1` exchange with `queue1.pending` routing key
-5. **`failed_messages`** queue → bound to `queue1_dlx` exchange for error handling
+1. **`orders`** exchange (main exchange)
+2. **`orders_dlx`** exchange (dead letter exchange)
+3. **`new_orders`** queue → bound to `orders` exchange with `orders.new` routing key
+4. **`pending_orders`** queue → bound to `orders` exchange with `orders.pending` routing key
+5. **`failed_messages`** queue → bound to `orders_dlx` exchange for error handling
 
 All queues are configured with dead letter routing to capture failed messages automatically.
 
@@ -312,7 +312,7 @@ else:
     print(f"❌ RabbitMQ connection issues: {health['error']}")
 
 # Get detailed queue information
-info = manager.get_queue_info('queue1')
+info = manager.get_queue_info('orders')
 print(f"Queue: {info['queue']}")
 print(f"Messages: {info['message_count']}")
 print(f"Consumers: {info['consumer_count']}")
@@ -328,20 +328,15 @@ services:
   app:
     build: .
     environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_USERNAME: admin
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      RABBITMQ_EXCHANGE: production
-      RABBITMQ_QUEUES: queue1,queue2
-      RABBITMQ_ROUTING_KEYS: queue1.*,queue2.*.*
+     - ~/etc/<org_name>/.env
     depends_on:
       - rabbitmq
   
   rabbitmq:
     image: rabbitmq:3-management
     environment:
-      RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+     - ~/etc/<org_name>/.env
+
 ```
 
 ### Kubernetes ConfigMap
@@ -355,8 +350,8 @@ data:
   RABBITMQ_HOST: "rabbitmq-service"
   RABBITMQ_PORT: "5672"
   RABBITMQ_EXCHANGE: "production"
-  RABBITMQ_QUEUES: "queue1,queue2"
-  RABBITMQ_ROUTING_KEYS: "queue1.*,queue2.*.*"
+  RABBITMQ_QUEUES: "orders,payments,notifications"
+  RABBITMQ_ROUTING_KEYS: "orders.*,payments.*,notifications.*"
 ```
 
 ## 🤝 Contributing
@@ -374,7 +369,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Mount-Isaac/rabbitmq-easy/blob/main/LICENSE) file for details.
 
 ## 🐛 Support
 
@@ -383,7 +378,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📚 Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes and version history.
+See [CHANGELOG.md](https://github.com/Mount-Isaac/rabbitmq-easy/blob/main/CHANGELOG.md) for a detailed list of changes and version history.
 
 ## 🙏 Acknowledgments
 
