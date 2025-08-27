@@ -12,7 +12,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="rabbitmq-easy",
-    version="1.0.4",
+    version="1.0.5",
     author="Isaac Kyalo",
     author_email="isadechair019@gmail.com",
     description="A simple, robust RabbitMQ manager for Python applications",
