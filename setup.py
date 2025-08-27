@@ -12,7 +12,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="rabbitmq-easy",
-    version="1.0.3",
+    version="1.0.4",
     author="Isaac Kyalo",
     author_email="isadechair019@gmail.com",
     description="A simple, robust RabbitMQ manager for Python applications",
@@ -20,6 +20,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/mount-isaac/rabbitmq-easy",
     packages=find_packages(),
+    exclude_package_data={'':["main.py"]},
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.4] - 2025-06-11
+
+### Changed
+- removed static dead_letter_queue_name (dlq_name) value from failed_messages 
+    to a passed parameter in the class constructor with a default value of failed_messages
+
 ## [1.0.1] - 2025-06-11
 
 ### Changed

@@ -41,16 +41,19 @@ class RabbitMQManager:
         exchange_type: str = 'topic',
         dead_letter_exchange: str = None,
         dead_letter_routing_key: str = 'dead_letter',
+        dead_letter_queue_name: str = 'failed_messages',
         heartbeat: int = 60,
         connection_timeout: int = 300,
         max_retries: int = 5,
         retry_delay: int = 5,
         prefetch_count: int = 1,
         enable_console_logging: bool = True,
-        log_level: str = 'INFO'
+        log_level: str = 'INFO',
+        **kwargs
     ):
         # Setup logging first
         self._setup_logging(enable_console_logging, log_level)
+
         
         # Load configuration from environment variables if not provided
         self.host = host or os.getenv('RABBITMQ_HOST', 'localhost')
@@ -58,15 +61,19 @@ class RabbitMQManager:
         self.username = username or os.getenv('RABBITMQ_USERNAME', 'guest')
         self.password = password or os.getenv('RABBITMQ_PASSWORD', 'guest')
         
+        self.logger.info(f"Setting up connection locally Host:{self.host} Port:{self.port} Username:{self.username} Password:{self.password}")
+
         # Queue and routing configuration
         self.queues = queues or []
         self.routing_keys = routing_keys or []
         self.exchange = exchange or os.getenv('RABBITMQ_EXCHANGE', '')
         self.exchange_type = exchange_type
+        self.dead_letter_queue_name = dead_letter_queue_name
         
         # Dead letter configuration with smart defaults
         self.dead_letter_exchange = dead_letter_exchange or f"{self.exchange}_dlx" if self.exchange else 'default_dead_letter_dlx'
         self.dead_letter_routing_key = dead_letter_routing_key
+        
         
         # Connection parameters
         self.heartbeat = int(heartbeat)
@@ -348,7 +355,7 @@ class RabbitMQManager:
         self.logger.info("✅ Initial queue setup completed")
 
         if self.dead_letter_exchange:
-            dlq_name = "failed_messages"  # Simple, clear name
+            dlq_name = self.dead_letter_queue_name 
             self.setup_queue(
                 queue_name=dlq_name,
                 exchange=self.dead_letter_exchange,
@@ -736,14 +743,38 @@ class RabbitMQManager:
     
 
 
-def create_rabbitmq_manager(**kwargs) -> RabbitMQManager:
+def create_rabbitmq_manager(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    queues: Optional[List[str]] = None,
+    routing_keys: Optional[List[str]] = None,
+    exchange: Optional[str] = None,
+    **kwargs
+) -> RabbitMQManager:
     """
     Create a RabbitMQ manager with environment variable support.
     
-    Usage:
-        manager = create_rabbitmq_manager(
-            queues=['queue1', 'queue2'],
-            routing_keys=['key1', 'key2']
-        )
+    Args:
+        host: RabbitMQ server host (default: from RABBITMQ_HOST env var)
+        port: RabbitMQ server port (default: from RABBITMQ_PORT env var)
+        username: Username for authentication
+        password: Password for authentication
+        queues: List of queue names to create
+        routing_keys: List of routing keys (must match queues count)
+        exchange: Exchange name
+        **kwargs: Additional arguments passed to RabbitMQManager
+    
+    Returns:
+        Configured RabbitMQ manager instance
     """
-    return RabbitMQManager(**kwargs)
+    try:
+        # Filter out None values
+        params = {k: v for k, v in locals().items() if v is not None and k != 'kwargs'}
+        params.update(kwargs)
+        return RabbitMQManager(**params)
+    except KeyboardInterrupt:
+        sys.exit("User requested termination. Exiting...")
+    except Exception as e:
+        print(f"An Error occurred during connection: {str(e)}")

@@ -50,3 +50,6 @@ Source = "https://github.com/mount-isaac/rabbitmq-easy"
 [tool.setuptools_scm]
 write_to = "rabbitmq_easy/_version.py"
 
+
+[tool.setuptools.packages.find]
+exclude = ["main.py"]

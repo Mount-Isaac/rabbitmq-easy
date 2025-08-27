@@ -126,3 +126,6 @@ dmypy.json
 rabbitmq_manager.log
 *.log
 .DS_Store
+
+# test
+main.py
