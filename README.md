@@ -6,24 +6,24 @@
 
 A simple, robust RabbitMQ manager for Python applications with built-in connection management, retry logic, and dead letter queue support.
 
-## 🚀 Features
+## Features
 
-- **🔄 Automatic Connection Management**: Built-in retry logic and connection recovery
-- **🛡️ Dead Letter Queue Support**: Automatic setup of dead letter exchanges and queues
-- **📊 Comprehensive Logging**: Both file and console logging with emoji indicators
-- **🔧 Environment Variable Support**: Easy configuration through environment variables
-- **🧪 Idempotent Operations**: Safe to run multiple times without errors
-- **📦 Context Manager Support**: Proper resource cleanup
-- **⚡ Production Ready**: Used in production environments
-- **🗑️ Resource Management**: Built-in cleanup and deletion functions
+- **Automatic Connection Management**: Built-in retry logic and connection recovery
+- **Dead Letter Queue Support**: Automatic setup of dead letter exchanges and queues
+- **Comprehensive Logging**: Both file and console logging with emoji indicators
+- **Environment Variable Support**: Easy configuration through environment variables
+- **Idempotent Operations**: Safe to run multiple times without errors
+- **Context Manager Support**: Proper resource cleanup
+- **Production Ready**: Used in production environments
+- **Resource Management**: Built-in cleanup and deletion functions
 
-## 📦 Installation
+## Installation
 
 ```bash
 pip install rabbitmq-easy
 ```
 
-## 🏃‍♂️ Quick Start
+## Quick Start
 
 ### Basic Usage
 
@@ -72,7 +72,7 @@ from rabbitmq_easy import create_rabbitmq_manager
 manager = create_rabbitmq_manager()
 ```
 
-## 🔧 Advanced Usage
+## Advanced Usage
 
 ### Custom Configuration
 
@@ -90,6 +90,7 @@ manager = RabbitMQManager(
     exchange='task_exchange',
     dead_letter_exchange='failed_tasks',
     dead_letter_routing_key='failed',
+    dead_letter_queue_name='failed_tasks',
     max_retries=3,
     retry_delay=5,
     enable_console_logging=True,
@@ -169,7 +170,7 @@ def handle_failed_messages(ch, method, properties, body):
 manager.start_consuming('failed_messages', handle_failed_messages)
 ```
 
-## ⚙️ Configuration Options
+## Configuration Options
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
@@ -188,7 +189,6 @@ manager.start_consuming('failed_messages', handle_failed_messages)
 | `enable_console_logging` | `RABBITMQ_CONSOLE_LOGGING` | `True` | Enable console logging |
 | `log_level` | `RABBITMQ_LOG_LEVEL` | `INFO` | Logging level |
 
-## 🛠️ Resource Management
 
 ### Queue and Exchange Operations
 
@@ -215,7 +215,7 @@ results = manager.delete_all_setup_resources(confirm=True)
 manager.reset_manager(confirm=True)
 ```
 
-## ❌ Error Handling
+## Error Handling
 
 The package includes custom exceptions for better error handling:
 
@@ -234,7 +234,7 @@ except RabbitMQConnectionError as e:
     print(f"Connection error: {e}")
 ```
 
-## 🏗️ What Gets Created Automatically
+## What Gets Created Automatically
 
 When you initialize with:
 
@@ -256,7 +256,7 @@ RabbitMQ Easy automatically creates:
 
 All queues are configured with dead letter routing to capture failed messages automatically.
 
-## 📋 Best Practices
+## Best Practices
 
 1. **Use Environment Variables**: Store sensitive information like passwords in environment variables
 2. **Context Managers**: Use `with` statements for automatic cleanup
@@ -266,20 +266,19 @@ All queues are configured with dead letter routing to capture failed messages au
 6. **Error Handling**: Always handle exceptions in your consumers
 7. **Resource Cleanup**: Use the provided cleanup functions during development
 
-## ⚠️ Important Notes
 
 ### Queue and Routing Key Validation
 
 The number of queues must match the number of routing keys:
 
 ```python
-# ✅ Correct
+# Correct
 manager = RabbitMQManager(
     queues=['queue1', 'queue2'],
     routing_keys=['key1', 'key2']  # Same count
 )
 
-# ❌ Will raise RabbitMQConfigurationError
+# Will raise RabbitMQConfigurationError
 manager = RabbitMQManager(
     queues=['queue1', 'queue2'],
     routing_keys=['key1']  # Mismatch!
@@ -291,25 +290,25 @@ manager = RabbitMQManager(
 Don't configure dead letter queues to point to themselves:
 
 ```python
-# ❌ Don't do this - creates infinite loop
+# Don't do this - creates infinite loop
 manager.setup_queue(
     'my_dlq',
     dead_letter_exchange='same_exchange'
 )
 
-# ✅ Do this instead
+# Do this instead
 manager.setup_queue('my_dlq', dead_letter_exchange=None)
 ```
 
-## 🔍 Monitoring and Health Checks
+## Monitoring and Health Checks
 
 ```python
 # Check connection health
 health = manager.health_check()
 if health['status'] == 'healthy':
-    print("✅ RabbitMQ connection is healthy")
+    print("RabbitMQ connection is healthy")
 else:
-    print(f"❌ RabbitMQ connection issues: {health['error']}")
+    print(f"RabbitMQ connection issues: {health['error']}")
 
 # Get detailed queue information
 info = manager.get_queue_info('orders')
@@ -318,7 +317,7 @@ print(f"Messages: {info['message_count']}")
 print(f"Consumers: {info['consumer_count']}")
 ```
 
-## 🚀 Production Deployment
+## Production Deployment
 
 ### Docker Compose Example
 
@@ -354,7 +353,7 @@ data:
   RABBITMQ_ROUTING_KEYS: "orders.*,payments.*,notifications.*"
 ```
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
 
@@ -367,20 +366,20 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 7. Push to the branch (`git push origin feature/amazing-feature`)
 8. Open a Pull Request
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](https://github.com/Mount-Isaac/rabbitmq-easy/blob/main/LICENSE) file for details.
 
-## 🐛 Support
+## Support
 
 - Create an issue on [GitHub](https://github.com/mount-isaac/rabbitmq-easy/issues)
 - Check the [documentation](https://github.com/mount-isaac/rabbitmq-easy#readme)
 
-## 📚 Changelog
+##  Changelog
 
 See [CHANGELOG.md](https://github.com/Mount-Isaac/rabbitmq-easy/blob/main/CHANGELOG.md) for a detailed list of changes and version history.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Built on top of the excellent [pika](https://github.com/pika/pika) library
 - Inspired by the need for simpler RabbitMQ management in Python applications
