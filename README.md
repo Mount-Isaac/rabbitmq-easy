@@ -10,7 +10,7 @@ A simple, robust RabbitMQ manager for Python applications with built-in connecti
 
 - **Automatic Connection Management**: Built-in retry logic and connection recovery
 - **Dead Letter Queue Support**: Automatic setup of dead letter exchanges and queues
-- **Comprehensive Logging**: Both file and console logging with emoji indicators
+- **Comprehensive Logging**: Both file and console logging
 - **Environment Variable Support**: Easy configuration through environment variables
 - **Idempotent Operations**: Safe to run multiple times without errors
 - **Context Manager Support**: Proper resource cleanup
