@@ -11,9 +11,34 @@ from .exceptions import (
     RabbitMQConfigurationError, 
     RabbitMQManagerError
 )
+from .utils import parse_env_list
 
-# Load environment variables
-load_dotenv()
+
+# A consumer that stayed connected at least this long before dropping is treated as
+# healthy and its reconnection budget starts over; rapid consecutive failures
+# accumulate toward max_retries instead.
+_CONSUMER_STABLE_SECONDS = 60
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer from the environment, falling back to ``default``."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise RabbitMQConfigurationError(
+            f"{name} must be an integer, got {raw!r}"
+        )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean from the environment, falling back to ``default``."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in ('0', 'false', 'no', 'off')
 
 
 class RabbitMQManager:
@@ -40,21 +65,35 @@ class RabbitMQManager:
         exchange: str = '',
         exchange_type: str = 'topic',
         dead_letter_exchange: str = None,
-        dead_letter_routing_key: str = 'dead_letter',
+        dead_letter_routing_key: str = None,
         dead_letter_queue_name: str = 'failed_messages',
-        heartbeat: int = 60,
+        heartbeat: int = None,
         connection_timeout: int = 300,
-        max_retries: int = 5,
-        retry_delay: int = 5,
+        max_retries: int = None,
+        retry_delay: int = None,
         prefetch_count: int = 1,
-        enable_console_logging: bool = True,
-        log_level: str = 'INFO',
+        publisher_confirms: bool = None,
+        enable_console_logging: bool = None,
+        log_level: str = None,
+        log_file: Optional[str] = None,
+        load_env: bool = True,
         **kwargs
     ):
-        # Setup logging first
-        self._setup_logging(enable_console_logging, log_level)
+        # Read a .env file first, so that environment variables are visible to
+        # everything below. Done here rather than at import time so that importing
+        # this package does not mutate os.environ for the host application.
+        if load_env:
+            load_dotenv()
 
-        
+        # Setup logging before anything that might log
+        if enable_console_logging is None:
+            enable_console_logging = _env_bool('RABBITMQ_CONSOLE_LOGGING', True)
+        self._setup_logging(
+            enable_console_logging,
+            log_level or os.getenv('RABBITMQ_LOG_LEVEL', 'INFO'),
+            log_file,
+        )
+
         # Load configuration from environment variables if not provided
         self.host = host or os.getenv('RABBITMQ_HOST', 'localhost')
         self.port = int(port or os.getenv('RABBITMQ_PORT', 5672))
@@ -64,23 +103,39 @@ class RabbitMQManager:
         self.logger.info(f"Setting up connection Host:{self.host} Port:{self.port} Username:{self.username}")
 
         # Queue and routing configuration
-        self.queues = queues or []
-        self.routing_keys = routing_keys or []
+        self.queues = queues if queues is not None else parse_env_list('RABBITMQ_QUEUES')
+        self.routing_keys = (
+            routing_keys if routing_keys is not None
+            else parse_env_list('RABBITMQ_ROUTING_KEYS')
+        )
         self.exchange = exchange or os.getenv('RABBITMQ_EXCHANGE', '')
         self.exchange_type = exchange_type
         self.dead_letter_queue_name = dead_letter_queue_name
         
         # Dead letter configuration with smart defaults
-        self.dead_letter_exchange = dead_letter_exchange or f"{self.exchange}_dlx" if self.exchange else 'default_dead_letter_dlx'
-        self.dead_letter_routing_key = dead_letter_routing_key
+        self.dead_letter_exchange = (
+            dead_letter_exchange
+            or os.getenv('RABBITMQ_DEAD_LETTER_EXCHANGE')
+            or (f"{self.exchange}_dlx" if self.exchange else 'default_dead_letter_dlx')
+        )
+        self.dead_letter_routing_key = (
+            dead_letter_routing_key
+            or os.getenv('RABBITMQ_DEAD_LETTER_ROUTING_KEY', 'dead_letter')
+        )
         
         
         # Connection parameters
-        self.heartbeat = int(heartbeat)
+        self.heartbeat = int(
+            heartbeat if heartbeat is not None else _env_int('RABBITMQ_HEARTBEAT', 60))
         self.connection_timeout = int(connection_timeout)
-        self.max_retries = int(max_retries)
-        self.retry_delay = int(retry_delay)
+        self.max_retries = int(
+            max_retries if max_retries is not None else _env_int('RABBITMQ_MAX_RETRIES', 5))
+        self.retry_delay = int(
+            retry_delay if retry_delay is not None else _env_int('RABBITMQ_RETRY_DELAY', 5))
         self.prefetch_count = int(prefetch_count)
+        if publisher_confirms is None:
+            publisher_confirms = _env_bool('RABBITMQ_PUBLISHER_CONFIRMS', True)
+        self.publisher_confirms = publisher_confirms
         
         # Validate configuration
         self._validate_configuration()
@@ -103,21 +158,28 @@ class RabbitMQManager:
         if self.queues:
             self._setup_initial_queues()
 
-    def _setup_logging(self, enable_console: bool, log_level: str) -> None:
-        """Setup logging configuration."""
+    def _setup_logging(self, enable_console: bool, log_level: str,
+                       log_file: Optional[str] = None) -> None:
+        """Setup logging configuration.
+
+        The library attaches no handlers of its own unless asked. Pass ``log_file``
+        to write to disk, or set ``enable_console_logging=False`` and configure the
+        ``rabbitmq_easy`` logger from the host application instead.
+        """
         self.logger = logging.getLogger(f"rabbitmq_easy.{self.__class__.__name__}")
         self.logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
         
         # Avoid duplicate handlers
         if not self.logger.handlers:
-            # File handler
-            file_handler = logging.FileHandler('rabbitmq_manager.log')
-            file_handler.setLevel(logging.DEBUG)
-            file_formatter = logging.Formatter(
-                'Date-Time: %(asctime)s - %(name)s - %(levelname)s - Line: %(lineno)s - %(message)s'
-            )
-            file_handler.setFormatter(file_formatter)
-            self.logger.addHandler(file_handler)
+            # File handler, only when a path is explicitly requested
+            if log_file:
+                file_handler = logging.FileHandler(log_file)
+                file_handler.setLevel(logging.DEBUG)
+                file_formatter = logging.Formatter(
+                    'Date-Time: %(asctime)s - %(name)s - %(levelname)s - Line: %(lineno)s - %(message)s'
+                )
+                file_handler.setFormatter(file_formatter)
+                self.logger.addHandler(file_handler)
             
             # Console handler
             if enable_console:
@@ -177,6 +239,9 @@ class RabbitMQManager:
                 self.connection = pika.BlockingConnection(params)
                 self.channel = self.connection.channel()
                 self.channel.basic_qos(prefetch_count=self.prefetch_count)
+                if self.publisher_confirms:
+                    # block until the broker acknowledges each published message
+                    self.channel.confirm_delivery()
                 self.logger.info("✅ Successfully established RabbitMQ connection")
                 return
             except pika.exceptions.AMQPConnectionError as e:
@@ -384,8 +449,17 @@ class RabbitMQManager:
                        exchange: str, 
                        routing_key: str, 
                        message: str,
-                       persistent: bool = True) -> None:
-        """Publish message with connection check and retry."""
+                       persistent: bool = True,
+                       mandatory: bool = False) -> None:
+        """Publish a message, with connection check and retry.
+
+        When publisher confirms are enabled (the default) this waits for the broker
+        to acknowledge the message and raises if it is rejected, rather than
+        returning as soon as the bytes reach the socket.
+
+        Set ``mandatory=True`` to also fail when no queue is bound for the routing
+        key, instead of the broker silently discarding the message.
+        """
         retries = 0
         while retries < self.max_retries:
             try:
@@ -397,10 +471,19 @@ class RabbitMQManager:
                     exchange=exchange,
                     routing_key=routing_key,
                     body=message,
-                    properties=properties
+                    properties=properties,
+                    mandatory=mandatory
                 )
                 self.logger.debug(f"📤 Published message to exchange: {exchange}, routing_key: {routing_key}")
                 return
+            except pika.exceptions.UnroutableError as e:
+                # No queue is bound for this routing key. Retrying cannot help.
+                error_msg = (
+                    f"Message was not routable to any queue "
+                    f"(exchange='{exchange}', routing_key='{routing_key}')"
+                )
+                self.logger.error(f"❌ {error_msg}")
+                raise RabbitMQManagerError(error_msg) from e
             except Exception as e:
                 retries += 1
                 self.logger.error(f"❌ Failed to publish message (attempt {retries}/{self.max_retries}): {str(e)}")
@@ -415,24 +498,67 @@ class RabbitMQManager:
     def start_consuming(self, 
                        queue_name: str, 
                        callback: Callable, 
-                       auto_ack: bool = False) -> None:
-        """Start consuming messages from a queue."""
-        try:
-            self.ensure_connection()
-            self.channel.basic_consume(
-                queue=queue_name,
-                on_message_callback=callback,
-                auto_ack=auto_ack
-            )
-            self.logger.info(f"📥 Started consuming from queue: {queue_name}")
-            self.channel.start_consuming()
-        except KeyboardInterrupt:
-            self.logger.info("Consumption interrupted by user")
-            self.stop_consuming()
-        except Exception as e:
-            error_msg = f"Error in consumer: {str(e)}"
-            self.logger.error(error_msg)
-            raise RabbitMQManagerError(error_msg)
+                       auto_ack: bool = False,
+                       reconnect: bool = True) -> None:
+        """Start consuming messages from a queue.
+
+        Blocks until ``stop_consuming()`` is called or the process is interrupted.
+
+        If the connection drops while consuming and ``reconnect`` is True, the
+        consumer reconnects and resumes, giving up after ``max_retries``
+        consecutive failures. A consumer that stayed connected for a while before
+        dropping gets a fresh budget, so a long-running consumer is not penalised
+        for failures spread out over time.
+        """
+        attempts = 0
+        while True:
+            connected_at = None
+            try:
+                self.ensure_connection()
+                self.channel.basic_consume(
+                    queue=queue_name,
+                    on_message_callback=callback,
+                    auto_ack=auto_ack
+                )
+                self.logger.info(f"📥 Started consuming from queue: {queue_name}")
+                connected_at = time.monotonic()
+                self.channel.start_consuming()
+                return  # stop_consuming() was called
+            except KeyboardInterrupt:
+                self.logger.info("Consumption interrupted by user")
+                self.stop_consuming()
+                raise
+            except (pika.exceptions.AMQPConnectionError,
+                    pika.exceptions.AMQPChannelError) as e:
+                if not reconnect:
+                    error_msg = f"Error in consumer: {str(e)}"
+                    self.logger.error(error_msg)
+                    raise RabbitMQManagerError(error_msg)
+
+                # Only count failures arriving in quick succession.
+                if (connected_at is not None
+                        and time.monotonic() - connected_at >= _CONSUMER_STABLE_SECONDS):
+                    attempts = 0
+
+                attempts += 1
+                if attempts >= self.max_retries:
+                    error_msg = (
+                        f"Consumer for '{queue_name}' gave up after {attempts} "
+                        f"reconnection attempts: {str(e)}"
+                    )
+                    self.logger.error(error_msg)
+                    raise RabbitMQManagerError(error_msg)
+
+                self.logger.warning(
+                    f"⚠️ Consumer connection lost ({str(e)}); reconnecting in "
+                    f"{self.retry_delay}s (attempt {attempts}/{self.max_retries})"
+                )
+                self.connection = None  # force a fresh connection
+                time.sleep(self.retry_delay)
+            except Exception as e:
+                error_msg = f"Error in consumer: {str(e)}"
+                self.logger.error(error_msg)
+                raise RabbitMQManagerError(error_msg)
 
     def stop_consuming(self) -> None:
         """Stop consuming messages."""
@@ -769,12 +895,7 @@ def create_rabbitmq_manager(
     Returns:
         Configured RabbitMQ manager instance
     """
-    try:
-        # Filter out None values
-        params = {k: v for k, v in locals().items() if v is not None and k != 'kwargs'}
-        params.update(kwargs)
-        return RabbitMQManager(**params)
-    except KeyboardInterrupt:
-        sys.exit("User requested termination. Exiting...")
-    except Exception as e:
-        print(f"An Error occurred during connection: {str(e)}")
+    # Filter out None values
+    params = {k: v for k, v in locals().items() if v is not None and k != 'kwargs'}
+    params.update(kwargs)
+    return RabbitMQManager(**params)

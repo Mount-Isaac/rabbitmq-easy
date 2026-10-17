@@ -129,3 +129,5 @@ rabbitmq_manager.log
 
 # test
 main.py
+# setuptools_scm generated
+rabbitmq_easy/_version.py

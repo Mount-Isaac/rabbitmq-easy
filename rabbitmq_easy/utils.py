@@ -26,5 +26,5 @@ def validate_queue_routing_match(queues: List[str], routing_keys: List[str]) -> 
     """Validate that queues and routing keys have matching lengths."""
     if not queues or not routing_keys:
         return True
-    assert len(queues) == len(routing_keys)
+    return len(queues) == len(routing_keys)
 

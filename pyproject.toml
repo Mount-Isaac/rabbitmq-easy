@@ -7,7 +7,7 @@ name = "rabbitmq-easy"
 dynamic = ["version"]
 description = "A simple, robust RabbitMQ manager for Python applications"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Isaac Kyalo", email = "isadechair019@gmail.com"},
@@ -18,14 +18,16 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Networking",
+    "Topic :: Internet",
 ]
+keywords = ["rabbitmq", "amqp", "queue", "messaging"]
 dependencies = [
     "pika>=1.2.0",
     "python-dotenv>=0.19.0",
@@ -38,6 +40,7 @@ dev = [
     "black",
     "flake8",
     "mypy",
+    "build",
     "twine",
     "wheel",
 ]
@@ -46,10 +49,11 @@ dev = [
 Homepage = "https://github.com/mount-isaac/rabbitmq-easy"
 "Bug Reports" = "https://github.com/mount-isaac/rabbitmq-easy/issues"
 Source = "https://github.com/mount-isaac/rabbitmq-easy"
+Documentation = "https://github.com/mount-isaac/rabbitmq-easy#readme"
 
 [tool.setuptools_scm]
 write_to = "rabbitmq_easy/_version.py"
 
 
 [tool.setuptools.packages.find]
-exclude = ["main.py"]
+include = ["rabbitmq_easy*"]

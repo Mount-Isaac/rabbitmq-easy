@@ -6,6 +6,7 @@ import pytest
 import unittest.mock as mock
 import os
 import json
+import logging
 from unittest.mock import MagicMock, patch, call
 from rabbitmq_easy import (
     RabbitMQManager, 
@@ -95,6 +96,213 @@ class TestRabbitMQManagerInitialization:
                 assert manager.username == 'env-user'
                 assert manager.password == 'env-pass'
                 assert manager.exchange == 'env-exchange'
+
+
+class TestEnvironmentVariableConfiguration:
+    """Every variable documented in the README must actually be read"""
+
+    @mock.patch('pika.BlockingConnection')
+    def test_all_documented_env_vars_are_read(self, mock_connection):
+        """All documented RABBITMQ_* variables take effect"""
+        env = {
+            'RABBITMQ_EXCHANGE': 'env_exchange',
+            'RABBITMQ_QUEUES': 'a,b,c',
+            'RABBITMQ_ROUTING_KEYS': 'a.*,b.*,c.*',
+            'RABBITMQ_DEAD_LETTER_EXCHANGE': 'env_dlx',
+            'RABBITMQ_DEAD_LETTER_ROUTING_KEY': 'env_dl_key',
+            'RABBITMQ_MAX_RETRIES': '9',
+            'RABBITMQ_RETRY_DELAY': '7',
+            'RABBITMQ_HEARTBEAT': '120',
+        }
+        with mock.patch.dict(os.environ, env):
+            manager = RabbitMQManager(host='localhost')
+
+        assert manager.exchange == 'env_exchange'
+        assert manager.queues == ['a', 'b', 'c']
+        assert manager.routing_keys == ['a.*', 'b.*', 'c.*']
+        assert manager.dead_letter_exchange == 'env_dlx'
+        assert manager.dead_letter_routing_key == 'env_dl_key'
+        assert manager.max_retries == 9
+        assert manager.retry_delay == 7
+        assert manager.heartbeat == 120
+
+    @mock.patch('pika.BlockingConnection')
+    def test_explicit_arguments_override_env(self, mock_connection):
+        """Keyword arguments take precedence over the environment"""
+        env = {
+            'RABBITMQ_QUEUES': 'from_env',
+            'RABBITMQ_MAX_RETRIES': '9',
+            'RABBITMQ_HEARTBEAT': '120',
+        }
+        with mock.patch.dict(os.environ, env):
+            manager = RabbitMQManager(
+                host='localhost', queues=['explicit'], routing_keys=['explicit.*'],
+                max_retries=2, heartbeat=30,
+            )
+
+        assert manager.queues == ['explicit']
+        assert manager.max_retries == 2
+        assert manager.heartbeat == 30
+
+    @mock.patch('pika.BlockingConnection')
+    def test_explicit_empty_list_is_not_overridden_by_env(self, mock_connection):
+        """Passing an empty list means empty, not 'fall back to the environment'"""
+        with mock.patch.dict(os.environ, {'RABBITMQ_QUEUES': 'a,b,c'}):
+            manager = RabbitMQManager(host='localhost', queues=[], routing_keys=[])
+
+        assert manager.queues == []
+
+    @mock.patch('pika.BlockingConnection')
+    def test_console_logging_disabled_via_env(self, mock_connection):
+        """RABBITMQ_CONSOLE_LOGGING=false suppresses the console handler"""
+        with mock.patch.dict(os.environ, {'RABBITMQ_CONSOLE_LOGGING': 'false'}):
+            manager = RabbitMQManager(host='localhost')
+
+        assert manager.logger.handlers == []
+
+    @mock.patch('pika.BlockingConnection')
+    def test_log_level_from_env(self, mock_connection):
+        """RABBITMQ_LOG_LEVEL sets the logger level"""
+        with mock.patch.dict(os.environ, {'RABBITMQ_LOG_LEVEL': 'WARNING'}):
+            manager = RabbitMQManager(host='localhost')
+
+        assert manager.logger.level == logging.WARNING
+
+    @mock.patch('pika.BlockingConnection')
+    def test_invalid_integer_env_var_raises(self, mock_connection):
+        """A non-numeric value gives a clear error rather than a silent default"""
+        with mock.patch.dict(os.environ, {'RABBITMQ_MAX_RETRIES': 'not-a-number'}):
+            with pytest.raises(RabbitMQConfigurationError, match="must be an integer"):
+                RabbitMQManager(host='localhost')
+
+    @mock.patch('pika.BlockingConnection')
+    def test_load_env_false_skips_dotenv(self, mock_connection):
+        """load_env=False must not read a .env file"""
+        with mock.patch('rabbitmq_easy.manager.load_dotenv') as mock_load:
+            RabbitMQManager(host='localhost', load_env=False)
+        mock_load.assert_not_called()
+
+
+class TestPublisherConfirms:
+    """Publishes must be acknowledged by the broker, not fire-and-forget"""
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirm_delivery_enabled_by_default(self, mock_connection):
+        """The channel is put into confirm mode on connect"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        RabbitMQManager(host='localhost')
+
+        mock_channel.confirm_delivery.assert_called_once()
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirms_can_be_disabled(self, mock_connection):
+        """publisher_confirms=False leaves the channel in plain mode"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        RabbitMQManager(host='localhost', publisher_confirms=False)
+
+        mock_channel.confirm_delivery.assert_not_called()
+
+    @mock.patch('pika.BlockingConnection')
+    def test_unroutable_message_raises_without_retrying(self, mock_connection):
+        """An unroutable message is a configuration error, so retrying is pointless"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+        mock_channel.basic_publish.side_effect = pika.exceptions.UnroutableError([])
+
+        manager = RabbitMQManager(host='localhost', max_retries=5, retry_delay=0)
+
+        with pytest.raises(RabbitMQManagerError, match="not routable"):
+            manager.publish_message('ex', 'rk', 'body', mandatory=True)
+
+        assert mock_channel.basic_publish.call_count == 1
+
+    @mock.patch('pika.BlockingConnection')
+    def test_mandatory_flag_is_forwarded(self, mock_connection):
+        """mandatory is passed through to pika"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        manager = RabbitMQManager(host='localhost')
+        manager.publish_message('ex', 'rk', 'body', mandatory=True)
+
+        assert mock_channel.basic_publish.call_args.kwargs['mandatory'] is True
+
+
+class TestConsumerReconnection:
+    """A dropped connection mid-consume must not kill the consumer"""
+
+    @mock.patch('pika.BlockingConnection')
+    def test_consumer_reconnects_after_connection_loss(self, mock_connection):
+        """The consumer resumes after the stream is lost"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        manager = RabbitMQManager(host='localhost', retry_delay=0, max_retries=5)
+
+        # drop once, then return normally as if stop_consuming() was called
+        mock_channel.start_consuming.side_effect = [
+            pika.exceptions.StreamLostError("connection reset"),
+            None,
+        ]
+
+        manager.start_consuming('orders', lambda *a: None)
+
+        assert mock_channel.start_consuming.call_count == 2
+        assert mock_channel.basic_consume.call_count == 2
+
+    @mock.patch('pika.BlockingConnection')
+    def test_consumer_gives_up_after_max_retries(self, mock_connection):
+        """Reconnection is bounded by max_retries"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        manager = RabbitMQManager(host='localhost', retry_delay=0, max_retries=3)
+        mock_channel.start_consuming.side_effect = pika.exceptions.StreamLostError("gone")
+
+        with pytest.raises(RabbitMQManagerError, match="gave up after"):
+            manager.start_consuming('orders', lambda *a: None)
+
+    @mock.patch('pika.BlockingConnection')
+    def test_reconnect_false_raises_immediately(self, mock_connection):
+        """reconnect=False preserves the previous fail-fast behaviour"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        manager = RabbitMQManager(host='localhost', retry_delay=0)
+        mock_channel.start_consuming.side_effect = pika.exceptions.StreamLostError("gone")
+
+        with pytest.raises(RabbitMQManagerError, match="Error in consumer"):
+            manager.start_consuming('orders', lambda *a: None, reconnect=False)
+
+        assert mock_channel.start_consuming.call_count == 1
+
+    @mock.patch('pika.BlockingConnection')
+    def test_keyboard_interrupt_is_not_retried(self, mock_connection):
+        """Ctrl-C must break out of the reconnect loop, not restart it"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+        mock_channel.is_closed = False
+        mock_channel.start_consuming.side_effect = KeyboardInterrupt()
+
+        manager = RabbitMQManager(host='localhost', retry_delay=0)
+
+        with pytest.raises(KeyboardInterrupt):
+            manager.start_consuming('orders', lambda *a: None)
+
+        assert mock_channel.start_consuming.call_count == 1
+        mock_channel.stop_consuming.assert_called_once()
 
 
 class TestRabbitMQManagerConnection:
@@ -388,13 +596,17 @@ class TestRabbitMQManagerMessageOperations:
         manager = RabbitMQManager(host='localhost')
         
         # Mock start_consuming to raise KeyboardInterrupt
+        mock_channel.is_closed = False
         mock_channel.start_consuming.side_effect = KeyboardInterrupt()
         
-        # Your implementation handles KeyboardInterrupt gracefully
-        manager.start_consuming('test_queue', mock_callback)
+        # KeyboardInterrupt must reach the caller rather than being swallowed,
+        # so that Ctrl-C propagates and the process exits as the user expects.
+        with pytest.raises(KeyboardInterrupt):
+            manager.start_consuming('test_queue', mock_callback)
         
-        # Verify setup was called
+        # Verify setup was called, and that the consumer was still stopped on the way out
         mock_channel.basic_consume.assert_called_once()
+        mock_channel.stop_consuming.assert_called_once()
     
     @mock.patch('pika.BlockingConnection')
     def test_stop_consuming(self, mock_connection):

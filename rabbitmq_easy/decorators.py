@@ -18,8 +18,7 @@ def queue_consumer(queue: str, exchange: Optional[str]=None, auto_ack:bool=True)
 
                 # check if function is async 
                 if asyncio.iscoroutinefunction(func):
-                    loop = asyncio.get_event_loop()
-                    result = loop.run_until_complete(func(message))
+                    result = asyncio.run(func(message))
                 else:
                     result = func(message)
                 
@@ -27,12 +26,12 @@ def queue_consumer(queue: str, exchange: Optional[str]=None, auto_ack:bool=True)
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 return result
             except Exception as e:
-                print(f"Error processing message: {str()}")
+                print(f"Error processing message: {e}")
                 if auto_ack:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 
                 raise
-        wrapper._quueu= queue
+        wrapper._queue = queue
         wrapper._exchange = exchange
         wrapper._original_func = func
 

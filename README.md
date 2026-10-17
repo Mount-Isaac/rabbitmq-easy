@@ -10,7 +10,7 @@ A simple, robust RabbitMQ manager for Python applications with built-in connecti
 
 - **Automatic Connection Management**: Built-in retry logic and connection recovery
 - **Dead Letter Queue Support**: Automatic setup of dead letter exchanges and queues
-- **Comprehensive Logging**: Both file and console logging
+- **Comprehensive Logging**: Console logging by default, optional log file
 - **Environment Variable Support**: Easy configuration through environment variables
 - **Idempotent Operations**: Safe to run multiple times without errors
 - **Context Manager Support**: Proper resource cleanup
@@ -178,16 +178,29 @@ manager.start_consuming('failed_messages', handle_failed_messages)
 | `port` | `RABBITMQ_PORT` | `5672` | RabbitMQ server port |
 | `username` | `RABBITMQ_USERNAME` | `guest` | Username for authentication |
 | `password` | `RABBITMQ_PASSWORD` | `guest` | Password for authentication |
+| `exchange` | `RABBITMQ_EXCHANGE` | `''` | Exchange name |
 | `queues` | `RABBITMQ_QUEUES` | `[]` | Comma-separated list of queues |
 | `routing_keys` | `RABBITMQ_ROUTING_KEYS` | `[]` | Comma-separated list of routing keys |
-| `exchange` | `RABBITMQ_EXCHANGE` | `''` | Exchange name |
 | `dead_letter_exchange` | `RABBITMQ_DEAD_LETTER_EXCHANGE` | `{exchange}_dlx` | Dead letter exchange name |
 | `dead_letter_routing_key` | `RABBITMQ_DEAD_LETTER_ROUTING_KEY` | `dead_letter` | Dead letter routing key |
 | `max_retries` | `RABBITMQ_MAX_RETRIES` | `5` | Maximum connection retry attempts |
 | `retry_delay` | `RABBITMQ_RETRY_DELAY` | `5` | Delay between retry attempts |
 | `heartbeat` | `RABBITMQ_HEARTBEAT` | `60` | Connection heartbeat interval |
-| `enable_console_logging` | `RABBITMQ_CONSOLE_LOGGING` | `True` | Enable console logging |
+| `publisher_confirms` | `RABBITMQ_PUBLISHER_CONFIRMS` | `True` | Wait for broker acknowledgement on publish |
+| `prefetch_count` | — | `1` | Unacknowledged messages allowed per consumer |
+| `enable_console_logging` | `RABBITMQ_CONSOLE_LOGGING` | `True` | Log to stdout |
 | `log_level` | `RABBITMQ_LOG_LEVEL` | `INFO` | Logging level |
+| `log_file` | — | `None` | Path to write a log file. No file is written unless set |
+| `load_env` | — | `True` | Read a `.env` file when the manager is constructed |
+
+Keyword arguments always take precedence over the environment. Passing an empty list
+(`queues=[]`) means empty — it does not fall back to `RABBITMQ_QUEUES`.
+
+> **Changed in 1.1.0:** every variable in the table above is now actually read. Earlier
+> versions documented nine of them but only ever read `RABBITMQ_HOST`, `RABBITMQ_PORT`,
+> `RABBITMQ_USERNAME`, `RABBITMQ_PASSWORD` and `RABBITMQ_EXCHANGE`. If you already have
+> any of the others set in a `.env` file, they will now take effect — check them before
+> upgrading.
 
 
 ### Queue and Exchange Operations
@@ -233,6 +246,129 @@ except RabbitMQConfigurationError as e:
 except RabbitMQConnectionError as e:
     print(f"Connection error: {e}")
 ```
+
+## Delivery Guarantees
+
+### Publishing
+
+Publisher confirms are enabled by default, so `publish_message()` waits for the broker
+to acknowledge the message and raises `RabbitMQManagerError` if it is rejected. Without
+them a publish returns as soon as the bytes reach the socket, and a broker crash loses
+messages you believe were sent.
+
+```python
+# default: blocks until the broker confirms
+manager.publish_message('orders', 'orders.new', '{"id": 1}')
+
+# also fail if no queue is bound for the routing key, instead of
+# the broker silently discarding the message
+manager.publish_message('orders', 'orders.new', '{"id": 1}', mandatory=True)
+```
+
+Confirms cost a round-trip per publish. If you are publishing in bulk and can tolerate
+loss, turn them off:
+
+```python
+manager = RabbitMQManager(host='localhost', publisher_confirms=False)
+```
+
+> **Changed in 1.1.0:** publishes were previously fire-and-forget. They are now confirmed
+> by default, which is slower and can raise where it previously returned silently.
+
+### Consuming
+
+If the connection drops while consuming, the consumer reconnects and resumes
+automatically, giving up after `max_retries` consecutive failures. A consumer that stayed
+connected for a while before dropping gets a fresh retry budget, so a long-running
+consumer is not penalised for failures spread out over time.
+
+```python
+# reconnects on connection loss (default)
+manager.start_consuming('orders', process_message)
+
+# fail immediately instead
+manager.start_consuming('orders', process_message, reconnect=False)
+```
+
+> **Changed in 1.1.0:** a dropped connection previously raised `RabbitMQManagerError` and
+> ended the consumer.
+
+### Throughput
+
+`prefetch_count` defaults to `1`, meaning the broker sends one message at a time and waits
+for an acknowledgement before sending the next. That is the safest setting and the slowest:
+it puts a network round-trip between every message. For higher throughput, raise it:
+
+```python
+manager = RabbitMQManager(host='localhost', prefetch_count=100)
+```
+
+Note that `pika`'s blocking connection is not thread-safe. A manager instance, and the
+channel it holds, should be used from a single thread.
+
+## Shutdown and Cleanup
+
+The manager holds an open connection, so it needs to be closed. The context manager
+is the recommended way, since it closes on both normal exit and exceptions:
+
+```python
+with RabbitMQManager(host='localhost') as manager:
+    manager.publish_message('my_exchange', 'orders.new', '{"order_id": 123}')
+# connection closed here, even if the block raised
+```
+
+Without the context manager, close it yourself:
+
+```python
+manager = RabbitMQManager(host='localhost')
+try:
+    manager.publish_message('my_exchange', 'orders.new', '{"order_id": 123}')
+finally:
+    manager.close()
+```
+
+### Interrupting a consumer
+
+`start_consuming()` blocks until the consumer stops. Pressing Ctrl-C stops the
+consumer and then re-raises `KeyboardInterrupt`, so the interrupt reaches your code
+and the process terminates as expected:
+
+```python
+with RabbitMQManager(host='localhost') as manager:
+    try:
+        manager.start_consuming('orders', process_message)
+    except KeyboardInterrupt:
+        print("Shutting down")
+    # close() runs on the way out of the with block
+```
+
+Catching `KeyboardInterrupt` is optional. If you do not catch it, it propagates
+normally and the `with` block still closes the connection.
+
+> **Changed in 1.1.0:** earlier versions caught `KeyboardInterrupt` inside
+> `start_consuming()` and did not re-raise it, so Ctrl-C never reached the caller and
+> execution continued to the next statement. If you relied on that, catch the
+> exception explicitly as shown above.
+
+### Logging
+
+The library attaches no log handlers of its own beyond a `NullHandler`. Console
+logging is on by default and can be disabled; file logging is off unless you ask
+for it:
+
+```python
+# quiet: configure the 'rabbitmq_easy' logger from your application instead
+manager = RabbitMQManager(host='localhost', enable_console_logging=False)
+
+# write to a file as well
+manager = RabbitMQManager(host='localhost', log_file='rabbitmq.log')
+```
+
+> **Changed in 1.1.0:** earlier versions always created `rabbitmq_manager.log` in the
+> current working directory, and logged the broker password into it. Credentials are
+> no longer logged, and no file is written unless `log_file` is set. Delete any
+> `rabbitmq_manager.log` left by an earlier version and rotate credentials that
+> appeared in it.
 
 ## What Gets Created Automatically
 
