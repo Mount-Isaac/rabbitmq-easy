@@ -61,7 +61,7 @@ class RabbitMQManager:
         self.username = username or os.getenv('RABBITMQ_USERNAME', 'guest')
         self.password = password or os.getenv('RABBITMQ_PASSWORD', 'guest')
         
-        self.logger.info(f"Setting up connection locally Host:{self.host} Port:{self.port} Username:{self.username} Password:{self.password}")
+        self.logger.info(f"Setting up connection Host:{self.host} Port:{self.port} Username:{self.username}")
 
         # Queue and routing configuration
         self.queues = queues or []
