@@ -236,6 +236,119 @@ class TestPublisherConfirms:
         assert mock_channel.basic_publish.call_args.kwargs['mandatory'] is True
 
 
+class TestChannelRebuildPreservesSettings:
+    """A rebuilt channel must not silently lose publisher confirms.
+
+    A channel carries its own QoS and confirm-mode state. Several paths rebuild
+    the channel after the broker closes it -- most commonly the passive declare
+    in _queue_exists, which closes the channel whenever a queue does not exist.
+    If those paths do not re-arm confirm mode, publisher_confirms=True degrades
+    to fire-and-forget and mandatory=True stops raising, with no error anywhere.
+    """
+
+    def _manager(self, mock_connection, **kw):
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+        manager = RabbitMQManager(host='localhost', **kw)
+        return manager, mock_conn, mock_channel
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirms_rearmed_when_channel_recreated(self, mock_connection):
+        """ensure_connection() rebuilding a closed channel re-arms confirm mode"""
+        manager, mock_conn, mock_channel = self._manager(mock_connection)
+        before = mock_channel.confirm_delivery.call_count
+
+        manager.channel.is_closed = True
+        manager.ensure_connection()
+
+        assert mock_channel.confirm_delivery.call_count > before
+        assert (mock_channel.confirm_delivery.call_count
+                == mock_conn.channel.call_count)
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirms_rearmed_after_queue_existence_probe(self, mock_connection):
+        """The passive declare closes the channel; the rebuild must re-arm"""
+        manager, mock_conn, mock_channel = self._manager(mock_connection)
+
+        mock_channel.queue_declare.side_effect = \
+            pika.exceptions.ChannelClosedByBroker(404, "NOT_FOUND")
+        assert manager._queue_exists('missing') is False
+
+        # the invariant: every channel ever created had confirm mode armed
+        assert (mock_channel.confirm_delivery.call_count
+                == mock_conn.channel.call_count)
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirms_rearmed_after_exchange_existence_probe(self, mock_connection):
+        """Same for the exchange probe"""
+        manager, mock_conn, mock_channel = self._manager(mock_connection)
+
+        mock_channel.exchange_declare.side_effect = \
+            pika.exceptions.ChannelClosedByBroker(404, "NOT_FOUND")
+        assert manager._exchange_exists('missing') is False
+
+        assert (mock_channel.confirm_delivery.call_count
+                == mock_conn.channel.call_count)
+
+    @mock.patch('pika.BlockingConnection')
+    def test_prefetch_reapplied_on_every_rebuild(self, mock_connection):
+        """QoS is channel state too, so it must be reapplied alongside confirms"""
+        manager, mock_conn, mock_channel = self._manager(mock_connection, prefetch_count=50)
+        before = mock_channel.basic_qos.call_count
+
+        manager.channel.is_closed = True
+        manager.ensure_connection()
+
+        assert mock_channel.basic_qos.call_count == before + 1
+        assert mock_channel.basic_qos.call_args.kwargs['prefetch_count'] == 50
+
+    @mock.patch('pika.BlockingConnection')
+    def test_confirms_not_armed_when_disabled(self, mock_connection):
+        """publisher_confirms=False stays off across rebuilds"""
+        manager, mock_conn, mock_channel = self._manager(
+            mock_connection, publisher_confirms=False)
+
+        manager.channel.is_closed = True
+        manager.ensure_connection()
+
+        mock_channel.confirm_delivery.assert_not_called()
+
+    def test_no_channel_is_built_outside_the_helper(self):
+        """Structural guard: _new_channel must be the only place channels are made.
+
+        This is what actually prevents the bug returning -- a future edit that
+        adds `self.connection.channel()` somewhere else fails here.
+        """
+        import inspect
+        import rabbitmq_easy.manager as manager_module
+
+        source = inspect.getsource(manager_module)
+        creations = source.count('self.connection.channel()')
+
+        assert creations == 1, (
+            f"found {creations} channel creations; all channel creation must go "
+            f"through _new_channel() or confirm mode and QoS are silently lost"
+        )
+
+
+class TestDeadLetterCleanup:
+    """Cleanup must respect a customised dead letter queue name"""
+
+    @mock.patch('pika.BlockingConnection')
+    def test_cleanup_uses_configured_dlq_name(self, mock_connection):
+        """A custom dead_letter_queue_name must not leak the queue"""
+        mock_conn, mock_channel = MagicMock(), MagicMock()
+        mock_connection.return_value = mock_conn
+        mock_conn.channel.return_value = mock_channel
+
+        manager = RabbitMQManager(host='localhost', dead_letter_queue_name='custom_dlq')
+        with mock.patch.object(manager, 'delete_queue', return_value=True) as delete_queue:
+            manager.cleanup_dead_letter_setup()
+
+        delete_queue.assert_called_once_with('custom_dlq')
+
+
 class TestConsumerReconnection:
     """A dropped connection mid-consume must not kill the consumer"""
 

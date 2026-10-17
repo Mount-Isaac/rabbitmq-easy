@@ -3,6 +3,31 @@
 All notable changes that have shipped, newest first.
 Planned work is tracked separately in [ROADMAP.md](ROADMAP.md).
 
+## [1.1.1] - 2026-10-17
+
+### Fixed
+- **Publisher confirms were silently lost whenever the channel was rebuilt.** 1.1.0 armed
+  `confirm_delivery()` only in `_initialize_connection`, but five other paths rebuild the
+  channel after the broker closes it and restored only the prefetch setting. The most
+  common of those is the passive `queue_declare` in `_queue_exists`, which the broker
+  closes the channel for whenever a queue does not exist — so declaring any new topology
+  silently dropped confirm mode.
+
+  The effect was that `publisher_confirms=True` degraded to fire-and-forget and
+  `mandatory=True` stopped raising `UnroutableError` entirely, with no error reported
+  anywhere. It was environment-dependent in the worst way: correct on a restart against
+  existing topology, broken on a first deploy, and broken again after any reconnect — so
+  durability disappeared precisely when it was needed. All channel creation now goes
+  through a single `_new_channel()` helper that reapplies QoS and confirm mode, and a
+  structural test fails if a future change creates a channel anywhere else.
+- **`cleanup_dead_letter_setup()` ignored `dead_letter_queue_name`.** It deleted the
+  hardcoded `failed_messages`, leaking the real queue for anyone who customised the name.
+- `_queue_exists()` and `_exchange_exists()` swallowed every exception and returned
+  `False`, reporting a transient failure as "does not exist". They now log a warning
+  naming the cause.
+- `publish_message()` built its debug log string on every call even when debug logging
+  was disabled.
+
 ## [1.1.0] - 2026-10-17
 
 ### Security

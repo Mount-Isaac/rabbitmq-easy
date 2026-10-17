@@ -229,6 +229,20 @@ class RabbitMQManager:
             retry_delay=self.retry_delay
         )
 
+    def _new_channel(self):
+        """Create a channel and apply every channel-level setting.
+
+        All channel creation must go through here. A channel carries its own QoS
+        and confirm-mode state, so a channel rebuilt anywhere else silently loses
+        publisher confirms, turning a confirmed publish back into fire-and-forget
+        with no error raised anywhere.
+        """
+        self.channel = self.connection.channel()
+        self.channel.basic_qos(prefetch_count=self.prefetch_count)
+        if self.publisher_confirms:
+            self.channel.confirm_delivery()
+        return self.channel
+
     def _initialize_connection(self) -> None:
         """Initialize connection and channel with comprehensive error handling."""
         retries = 0
@@ -237,11 +251,7 @@ class RabbitMQManager:
                 self.logger.info(f"Attempting to connect to RabbitMQ at {self.host}:{self.port} (attempt {retries + 1}/{self.max_retries})")
                 params = self._get_connection_parameters()
                 self.connection = pika.BlockingConnection(params)
-                self.channel = self.connection.channel()
-                self.channel.basic_qos(prefetch_count=self.prefetch_count)
-                if self.publisher_confirms:
-                    # block until the broker acknowledges each published message
-                    self.channel.confirm_delivery()
+                self._new_channel()
                 self.logger.info("✅ Successfully established RabbitMQ connection")
                 return
             except pika.exceptions.AMQPConnectionError as e:
@@ -267,8 +277,7 @@ class RabbitMQManager:
                 self._initialize_connection()
             elif self.channel is None or self.channel.is_closed:
                 self.logger.warning("Channel lost, recreating...")
-                self.channel = self.connection.channel()
-                self.channel.basic_qos(prefetch_count=self.prefetch_count)
+                self._new_channel()
         except Exception as e:
             self.logger.error(f"Connection error: {str(e)}")
             self._initialize_connection()
@@ -284,10 +293,13 @@ class RabbitMQManager:
             return True
         except pika.exceptions.ChannelClosedByBroker:
             # Exchange doesn't exist, need to recreate channel
-            self.channel = self.connection.channel()
-            self.channel.basic_qos(prefetch_count=self.prefetch_count)
+            self._new_channel()
             return False
-        except Exception:
+        except Exception as e:
+            # Not proof of absence - say so rather than reporting it as "missing"
+            self.logger.warning(
+                f"Could not determine whether exchange '{exchange_name}' exists: {e}"
+            )
             return False
 
     def _queue_exists(self, queue_name: str) -> bool:
@@ -298,10 +310,13 @@ class RabbitMQManager:
             return True
         except pika.exceptions.ChannelClosedByBroker:
             # Queue doesn't exist, need to recreate channel
-            self.channel = self.connection.channel()
-            self.channel.basic_qos(prefetch_count=self.prefetch_count)
+            self._new_channel()
             return False
-        except Exception:
+        except Exception as e:
+            # Not proof of absence - say so rather than reporting it as "missing"
+            self.logger.warning(
+                f"Could not determine whether queue '{queue_name}' exists: {e}"
+            )
             return False
 
     def setup_exchange(self, exchange_name: str, exchange_type: str = None, durable: bool = True) -> None:
@@ -474,7 +489,10 @@ class RabbitMQManager:
                     properties=properties,
                     mandatory=mandatory
                 )
-                self.logger.debug(f"📤 Published message to exchange: {exchange}, routing_key: {routing_key}")
+                self.logger.debug(
+                    "📤 Published message to exchange: %s, routing_key: %s",
+                    exchange, routing_key
+                )
                 return
             except pika.exceptions.UnroutableError as e:
                 # No queue is bound for this routing key. Retrying cannot help.
@@ -636,8 +654,7 @@ class RabbitMQManager:
             else:
                 self.logger.error(f"❌ Failed to delete queue '{queue_name}': {str(e)}")
             # Recreate channel after it was closed
-            self.channel = self.connection.channel()
-            self.channel.basic_qos(prefetch_count=self.prefetch_count)
+            self._new_channel()
             return False
         except Exception as e:
             self.logger.error(f"❌ Failed to delete queue '{queue_name}': {str(e)}")
@@ -684,8 +701,7 @@ class RabbitMQManager:
             else:
                 self.logger.error(f"❌ Failed to delete exchange '{exchange_name}': {str(e)}")
             # Recreate channel after it was closed
-            self.channel = self.connection.channel()
-            self.channel.basic_qos(prefetch_count=self.prefetch_count)
+            self._new_channel()
             return False
         except Exception as e:
             self.logger.error(f"❌ Failed to delete exchange '{exchange_name}': {str(e)}")
@@ -779,7 +795,7 @@ class RabbitMQManager:
             dlx_deleted = False
             
             # Delete the auto-created dead letter queue
-            if self.delete_queue("failed_messages"):
+            if self.delete_queue(self.dead_letter_queue_name):
                 dlq_deleted = True
                 
             # Delete the dead letter exchange if it exists
